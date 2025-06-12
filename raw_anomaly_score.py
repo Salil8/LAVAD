@@ -3,26 +3,47 @@ import transformers
 import torch
 from transformers import pipeline
 
+
 class Anomaly_Score:
     def __init__(self, pipe):
-        self.pipe = pipe # llm model instance
+        self.pipe = pipe
 
-    def augment(self, summarized_caption): # function to prepare llm input
-        '''summarized_caption: (str) Temporally Summarized Caption Si'''
-
-        messages = [
-            {"role": "system", "content": "If you were a law enforcement agency, how would you rate the scene described on a scale from 0 to 1, with 0 representing a standard scene and 1 denoting a scene with suspicious activities. Return nothing else but ONLY a single python float number out of the given list: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0] and nothing else"},
-            {"role": "user", "content": summarized_caption},
+    def augment(self, summarized_caption: str):
+        return [
+            {"role":"system", "content":(
+                "If you were a law enforcement agency, rate the scene described on a scale "
+                "from 0.0 (completely normal) to 1.0 (highly suspicious). "
+                "Return ONLY a single float from {0.0,0.1,…,0.9,1.0}, nothing else."
+            )},
+            {"role":"user",   "content": summarized_caption},
         ]
-        return messages
 
-    def generate(self, summarized_caption): # function to generate and return anomaly score
-        messages = self.augment(summarized_caption)
-        
-        outputs = self.pipe(
-            messages,
-            max_new_tokens=256,
+    def batch_generate(self, summaries: list[str]) -> list[float]:
+        # build list of message-lists
+        batch_msgs = [self.augment(s) for s in summaries]
+        # run the pipeline on the entire micro-batch
+        outs = self.pipe(
+            batch_msgs,
+            max_new_tokens=8,
             pad_token_id=self.pipe.tokenizer.eos_token_id,
         )
+        scores = []
+        for out in outs:
+            # pipeline returns list of lists if >1 input
+            entry = out[0] if isinstance(out, list) else out
+            # extract assistant reply
+            gen = entry["generated_text"]
+            # find the assistant’s message
+            text = ""
+            for msg in gen:
+                if msg.get("role") == "assistant":
+                    text = msg.get("content", "")
+                    break
+            # parse float
+            try:
+                scores.append(float(text.strip()))
+            except:
+                scores.append(-1.0)
+        return scores
 
-        return float(outputs[0]["generated_text"][2]["content"])
+
